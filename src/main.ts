@@ -1,34 +1,35 @@
-/**
- * Some predefined delay values (in milliseconds).
- */
-export enum Delays {
-    Short = 500,
-    Medium = 2000,
-    Long = 5000,
-}
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { execSync } from 'child_process';
 
-/**
- * Returns a Promise<string> that resolves after a given time.
- *
- * @param {string} name - A name.
- * @param {number=} [delay=Delays.Medium] - A number of milliseconds to delay resolution of the Promise.
- * @returns {Promise<string>}
- */
-function delayedHello(
-    name: string,
-    delay: number = Delays.Medium,
-): Promise<string> {
-    return new Promise((resolve: (value?: string) => void) =>
-        setTimeout(() => resolve(`Hello, ${name}`), delay),
+// 🔧 Hardcoded path to Windows qBittorrent fastresume files
+const WINDOWS_QBIT_FASTRESUME_DIR =
+    '/media/farhan/SSD-OS-10/Users/metal/AppData/Local/qBittorrent/BT_backup';
+// 🔧 Hardcoded base path where Linux files should be copied to
+const LINUX_DOWNLOADS_DIR = path.join(
+    os.homedir(),
+    'Downloads/migrated-torrents',
+);
+
+// check if qbittorrent is running
+const isQBitRunning = (): boolean => {
+    try {
+        execSync('pgrep -x qbittorrent', { stdio: 'ignore' });
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+if (isQBitRunning()) {
+    console.error(
+        `❌ Qbittorrent is running. Close it before running the migration.`,
     );
+    process.exit(1);
 }
 
-// Please see the comment in the .eslintrc.json file about the suppressed rule!
-// Below is an example of how to use ESLint errors suppression. You can read more
-// at https://eslint.org/docs/latest/user-guide/configuring/rules#disabling-rules
-
-// eslint-disable-next-line @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-explicit-any
-export async function greeter(name: any) {
-    // The name parameter should be of type string. Any is used only to trigger the rule.
-    return await delayedHello(name, Delays.Long);
+if (!fs.existsSync(WINDOWS_QBIT_FASTRESUME_DIR)) {
+    console.error(`❌ Directory not found: ${WINDOWS_QBIT_FASTRESUME_DIR}`);
+    process.exit(1);
 }
