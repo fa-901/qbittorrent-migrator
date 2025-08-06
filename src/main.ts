@@ -97,12 +97,12 @@ const isQBitRunning = (): boolean => {
     }
 };
 
-// if (isQBitRunning()) {
-//     console.error(
-//         `❌ Qbittorrent is running. Close it before running the migration.`,
-//     );
-//     process.exit(1);
-// }
+if (isQBitRunning()) {
+    console.error(
+        `❌ Qbittorrent is running. Close it before running the migration.`,
+    );
+    process.exit(1);
+}
 
 if (!fs.existsSync(WINDOWS_QBIT_DIR)) {
     console.error(`❌ Directory not found: ${WINDOWS_QBIT_DIR}`);
@@ -119,17 +119,21 @@ if (files.length < 1) {
 
 console.log(`📄 Found ${fastResumeFiles.length} torrents to migrate.`);
 
+const savePaths = new Set<string>();
+
 // read the file content
 fastResumeFiles.forEach(async (file) => {
     const filePath = path.join(WINDOWS_QBIT_DIR, file);
     const fileContent = await fs.promises.readFile(filePath);
     try {
         const decoded = bencode.decode(fileContent, 'utf-8');
-        console.log(`✔ File: ${file} \n  - Save Path: ${decoded.save_path}\n`);
-        // if (index === 0) {
-        //     console.log(decoded);
-        // }
+        // strip Windows drive letter and trailing slashes
+        const savePath = decoded.save_path
+            .replace(/^[A-Z]:\\/i, '')
+            .replace(/\\+$/, '');
+        savePaths.add(savePath);
     } catch (error) {
         console.error('❌ Error decoding fastresume file:', error);
     }
 });
+console.log(`📂 Save paths extracted`, JSON.stringify([...savePaths]));
