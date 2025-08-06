@@ -1,8 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
+import { promisify } from 'util';
 import bencode from 'bencode';
+
+const execAsync = promisify(exec);
 
 // 🔧 Hardcoded path to Windows qBittorrent fastresume files
 const WINDOWS_QBIT_DIR =
@@ -12,6 +15,77 @@ const LINUX_DOWNLOADS_DIR = path.join(
     os.homedir(),
     'Downloads/migrated-torrents',
 );
+
+const QBIT_FLATPAK_DIR = path.join(
+    os.homedir(),
+    '.var/app/org.qbittorrent.qBittorrent/data/qBittorrent/BT_backup',
+);
+
+// find the BT_Backup directory in current Linux distro
+const findBTBackup = async (): Promise<string | null> => {
+    const homeDir = os.homedir();
+
+    try {
+        const { stdout } = await execAsync(
+            `find "${homeDir}" -name "BT_backup" -type d 2>/dev/null`,
+        );
+        const results = stdout.trim();
+
+        if (!results) {
+            return null;
+        }
+
+        const btBackupPaths = results.split('\n').filter(Boolean);
+
+        for (const btBackupPath of btBackupPaths) {
+            try {
+                const stat = await fs.promises.stat(btBackupPath);
+                if (!stat.isDirectory()) continue;
+
+                // Check if parent directory contains qBittorrent.conf
+                const parentDir = path.dirname(btBackupPath);
+                const configFile = path.join(parentDir, 'qBittorrent.conf');
+
+                try {
+                    await fs.promises.access(configFile);
+                    return btBackupPath;
+                } catch {
+                    // As a fallback, check if BT_backup contains .torrent or .fastresume files
+                    try {
+                        const files = await fs.promises.readdir(btBackupPath);
+                        const hasQBTFiles = files.some(
+                            (file) =>
+                                file.endsWith('.torrent') ||
+                                file.endsWith('.fastresume') ||
+                                file.endsWith('.resume'),
+                        );
+
+                        if (hasQBTFiles) {
+                            return btBackupPath;
+                        }
+                    } catch {
+                        continue;
+                    }
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+};
+
+const LINUX_QBIT_DIR = await findBTBackup();
+if (!LINUX_QBIT_DIR) {
+    console.error(
+        '❌ No BT_backup directory found. Please ensure qBittorrent is installed and has been run at least once.',
+    );
+    process.exit(1);
+}
+console.log('Linux BT_backup path:', LINUX_QBIT_DIR);
 
 // check if qbittorrent is running
 const isQBitRunning = (): boolean => {
@@ -39,7 +113,7 @@ const files = await fs.promises.readdir(WINDOWS_QBIT_DIR);
 const fastResumeFiles = files.filter((f) => f.endsWith('.fastresume'));
 
 if (files.length < 1) {
-    console.log('No torrents found.');
+    console.log('🤷 No torrents found.');
     process.exit(1);
 }
 
@@ -52,6 +126,9 @@ fastResumeFiles.forEach(async (file) => {
     try {
         const decoded = bencode.decode(fileContent, 'utf-8');
         console.log(`✔ File: ${file} \n  - Save Path: ${decoded.save_path}\n`);
+        // if (index === 0) {
+        //     console.log(decoded);
+        // }
     } catch (error) {
         console.error('❌ Error decoding fastresume file:', error);
     }
