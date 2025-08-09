@@ -8,7 +8,7 @@ import { glob } from 'glob';
 
 const execAsync = promisify(exec);
 
-const GLOB_TIMEOUT_MS = 120000;
+const GLOB_TIMEOUT_MS = 150000;
 
 // 🔧 Hardcoded path to Windows qBittorrent fastresume files
 const WINDOWS_QBIT_DIR =
@@ -83,6 +83,7 @@ const findBTBackup = async (): Promise<string | null> => {
 
 // Function to search for a single path
 const findPaths = async (path: string): Promise<string[]> => {
+    console.log(`Searching for path: ${path}`);
     const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => {
             reject(
@@ -177,13 +178,15 @@ if (files.length < 1) {
 
 console.log(`📄 Found ${fastResumeFiles.length} torrents to migrate.`);
 
-const savePaths = new Set<string>();
-
-const pathMap: { [key: string]: string } = {};
+type Path = {
+    path: string;
+    linuxPath?: string;
+};
+const pathMap: { [key: string]: Path } = {};
 
 // get all unique paths
 await Promise.all(
-    fastResumeFiles.map(async (file, i) => {
+    fastResumeFiles.map(async (file) => {
         const filePath = path.join(WINDOWS_QBIT_DIR, file);
         const fileContent = await fs.promises.readFile(filePath);
         try {
@@ -192,8 +195,7 @@ await Promise.all(
             const savePath = decoded.save_path
                 .replace(/^[A-Z]:\\/i, '')
                 .replace(/\\+$/, '');
-            pathMap[savePath] = '';
-            savePaths.add(savePath);
+            pathMap[decoded.save_path] = { path: savePath };
         } catch (error) {
             console.error('❌ Error decoding fastresume file:', error);
         }
@@ -203,11 +205,11 @@ await Promise.all(
 // Map Windows paths to Linux paths
 await Promise.all(
     Object.keys(pathMap).map(async (savePath) => {
-        const linuxPaths = await findPaths(savePath);
+        const linuxPaths = await findPaths(pathMap[savePath].path);
         if (!linuxPaths.length) {
             process.exit(1);
         }
-        pathMap[savePath] = linuxPaths[0] || '';
+        pathMap[savePath].linuxPath = linuxPaths[0];
     }),
 );
 console.log(`📂 Save paths extracted`, pathMap);
