@@ -4,8 +4,11 @@ import os from 'os';
 import { execSync, exec } from 'child_process';
 import { promisify } from 'util';
 import bencode from 'bencode';
+import { glob } from 'glob';
 
 const execAsync = promisify(exec);
+
+const GLOB_TIMEOUT_MS = 120000;
 
 // 🔧 Hardcoded path to Windows qBittorrent fastresume files
 const WINDOWS_QBIT_DIR =
@@ -78,6 +81,61 @@ const findBTBackup = async (): Promise<string | null> => {
     }
 };
 
+// Function to search for a single path
+const findPaths = async (path: string): Promise<string[]> => {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+            reject(
+                new Error(
+                    `Glob search timed out after ${GLOB_TIMEOUT_MS / 1000}s`,
+                ),
+            );
+        }, GLOB_TIMEOUT_MS);
+    });
+
+    // TODO: in case of duplicate paths, get the correct one by matching file contents
+    const globPromise = glob(`/**/${path}`, {
+        ignore: [
+            '**/proc/**',
+            '**/sys/**',
+            '**/dev/**',
+            '**/run/**',
+            '**/var/lib/**',
+            '**/snap/**',
+
+            // Temporary and cache
+            '**/tmp/**',
+            '**/var/tmp/**',
+            '**/var/cache/**',
+            '**/var/log/**',
+            '**/.cache/**',
+
+            // Development
+            '**/node_modules/**',
+            '**/.git/**',
+            '**/build/**',
+            '**/dist/**',
+            '**/__pycache__/**',
+            '**/venv/**',
+            '**/vendor/**',
+
+            // Recovery/system
+            '**/lost+found/**',
+            '**/var/crash/**',
+        ],
+        follow: false,
+        includeChildMatches: false,
+        nocase: false,
+        platform: 'linux',
+    });
+    try {
+        return await Promise.race([globPromise, timeoutPromise]);
+    } catch (error) {
+        console.error(error);
+        return [];
+    }
+};
+
 const LINUX_QBIT_DIR = await findBTBackup();
 if (!LINUX_QBIT_DIR) {
     console.error(
@@ -121,19 +179,35 @@ console.log(`📄 Found ${fastResumeFiles.length} torrents to migrate.`);
 
 const savePaths = new Set<string>();
 
-// read the file content
-fastResumeFiles.forEach(async (file) => {
-    const filePath = path.join(WINDOWS_QBIT_DIR, file);
-    const fileContent = await fs.promises.readFile(filePath);
-    try {
-        const decoded = bencode.decode(fileContent, 'utf-8');
-        // strip Windows drive letter and trailing slashes
-        const savePath = decoded.save_path
-            .replace(/^[A-Z]:\\/i, '')
-            .replace(/\\+$/, '');
-        savePaths.add(savePath);
-    } catch (error) {
-        console.error('❌ Error decoding fastresume file:', error);
-    }
-});
-console.log(`📂 Save paths extracted`, JSON.stringify([...savePaths]));
+const pathMap: { [key: string]: string } = {};
+
+// get all unique paths
+await Promise.all(
+    fastResumeFiles.map(async (file, i) => {
+        const filePath = path.join(WINDOWS_QBIT_DIR, file);
+        const fileContent = await fs.promises.readFile(filePath);
+        try {
+            const decoded = bencode.decode(fileContent, 'utf-8');
+            // strip Windows drive letter and trailing slashes
+            const savePath = decoded.save_path
+                .replace(/^[A-Z]:\\/i, '')
+                .replace(/\\+$/, '');
+            pathMap[savePath] = '';
+            savePaths.add(savePath);
+        } catch (error) {
+            console.error('❌ Error decoding fastresume file:', error);
+        }
+    }),
+);
+
+// Map Windows paths to Linux paths
+await Promise.all(
+    Object.keys(pathMap).map(async (savePath) => {
+        const linuxPaths = await findPaths(savePath);
+        if (!linuxPaths.length) {
+            process.exit(1);
+        }
+        pathMap[savePath] = linuxPaths[0] || '';
+    }),
+);
+console.log(`📂 Save paths extracted`, pathMap);
