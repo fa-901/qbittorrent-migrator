@@ -1,12 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execSync, exec } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
 import readline from 'readline';
 import bencode from 'bencode';
 import { glob } from 'glob';
-import { stderr } from 'process';
 
 const execAsync = promisify(exec);
 
@@ -173,7 +172,6 @@ while (!WINDOWS_QBIT_DIR) {
     WINDOWS_QBIT_DIR = await promptUserInput(
         'Enter the path to your qBittorrent Windows directory:',
     );
-    console.log({ WINDOWS_QBIT_DIR });
 }
 
 const LINUX_QBIT_DIR = await findBTBackup();
@@ -183,7 +181,7 @@ if (!LINUX_QBIT_DIR) {
     );
     process.exit(1);
 }
-console.log('Linux BT_backup path:', LINUX_QBIT_DIR);
+console.log('Found Linux BT_backup:', LINUX_QBIT_DIR);
 
 if (await isQBitRunning()) {
     console.error(
@@ -204,8 +202,6 @@ if (files.length < 1) {
     console.log('🤷 No torrents found.');
     process.exit(1);
 }
-
-console.log(`📄 Found ${fastResumeFiles.length} torrents to migrate.`);
 
 type Path = {
     normalizedPath: string;
@@ -243,3 +239,5 @@ await Promise.all(
     }),
 );
 console.log(`📂 Save paths extracted`, pathMap);
+
+console.log(`📄 ${fastResumeFiles.length} torrents torrents will be migrated.`);
