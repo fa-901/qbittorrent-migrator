@@ -3,26 +3,58 @@ import path from 'path';
 import os from 'os';
 import { execSync, exec } from 'child_process';
 import { promisify } from 'util';
+import readline from 'readline';
 import bencode from 'bencode';
 import { glob } from 'glob';
+import { stderr } from 'process';
 
 const execAsync = promisify(exec);
 
 const GLOB_TIMEOUT_MS = 150000;
 
-// 🔧 Hardcoded path to Windows qBittorrent fastresume files
-const WINDOWS_QBIT_DIR =
-    '/media/farhan/SSD-OS-10/Users/metal/AppData/Local/qBittorrent/BT_backup';
+let WINDOWS_QBIT_DIR: string;
+// const WINDOWS_QBIT_DIR =
+//     '/media/farhan/SSD-OS-10/Users/metal/AppData/Local/qBittorrent/BT_backup';
 // 🔧 Hardcoded base path where Linux files should be copied to
-const LINUX_DOWNLOADS_DIR = path.join(
-    os.homedir(),
-    'Downloads/migrated-torrents',
-);
 
 const QBIT_FLATPAK_DIR = path.join(
     os.homedir(),
     '.var/app/org.qbittorrent.qBittorrent/data/qBittorrent/BT_backup',
 );
+
+// Prompt user for input with a default value
+const promptUserInput = async (
+    question: string,
+    defaultValue?: string,
+): Promise<string> => {
+    return new Promise((resolve) => {
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+        });
+
+        // Add default value in the prompt
+        const promptText = defaultValue
+            ? `${question} (${defaultValue}): `
+            : `${question}: `;
+
+        rl.question(promptText, (answer) => {
+            rl.close();
+            // Use default if no answer given
+            resolve(answer || defaultValue || '');
+        });
+    });
+};
+
+// check if qbittorrent is running
+const isQBitRunning = async (): Promise<boolean> => {
+    try {
+        const { stdout } = await execAsync('pidof qbittorrent-nox qbittorrent');
+        return stdout.trim().length > 0;
+    } catch {
+        return false;
+    }
+};
 
 // find the BT_Backup directory in current Linux distro
 const findBTBackup = async (): Promise<string | null> => {
@@ -137,6 +169,13 @@ const findPaths = async (path: string): Promise<string[]> => {
     }
 };
 
+while (!WINDOWS_QBIT_DIR) {
+    WINDOWS_QBIT_DIR = await promptUserInput(
+        'Enter the path to your qBittorrent Windows directory:',
+    );
+    console.log({ WINDOWS_QBIT_DIR });
+}
+
 const LINUX_QBIT_DIR = await findBTBackup();
 if (!LINUX_QBIT_DIR) {
     console.error(
@@ -146,17 +185,7 @@ if (!LINUX_QBIT_DIR) {
 }
 console.log('Linux BT_backup path:', LINUX_QBIT_DIR);
 
-// check if qbittorrent is running
-const isQBitRunning = (): boolean => {
-    try {
-        execSync('pgrep -x qbittorrent', { stdio: 'ignore' });
-        return true;
-    } catch {
-        return false;
-    }
-};
-
-if (isQBitRunning()) {
+if (await isQBitRunning()) {
     console.error(
         `❌ Qbittorrent is running. Close it before running the migration.`,
     );
@@ -179,7 +208,7 @@ if (files.length < 1) {
 console.log(`📄 Found ${fastResumeFiles.length} torrents to migrate.`);
 
 type Path = {
-    path: string;
+    normalizedPath: string;
     linuxPath?: string;
 };
 const pathMap: { [key: string]: Path } = {};
@@ -191,11 +220,12 @@ await Promise.all(
         const fileContent = await fs.promises.readFile(filePath);
         try {
             const decoded = bencode.decode(fileContent, 'utf-8');
-            // strip Windows drive letter and trailing slashes
+            // normalize Windows path
             const savePath = decoded.save_path
                 .replace(/^[A-Z]:\\/i, '')
-                .replace(/\\+$/, '');
-            pathMap[decoded.save_path] = { path: savePath };
+                .replace(/\\+$/, '')
+                .replace(/\\/g, '/');
+            pathMap[decoded.save_path] = { normalizedPath: savePath };
         } catch (error) {
             console.error('❌ Error decoding fastresume file:', error);
         }
@@ -205,7 +235,7 @@ await Promise.all(
 // Map Windows paths to Linux paths
 await Promise.all(
     Object.keys(pathMap).map(async (savePath) => {
-        const linuxPaths = await findPaths(pathMap[savePath].path);
+        const linuxPaths = await findPaths(pathMap[savePath].normalizedPath);
         if (!linuxPaths.length) {
             process.exit(1);
         }
