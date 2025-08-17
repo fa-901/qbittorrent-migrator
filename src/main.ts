@@ -12,14 +12,6 @@ const execAsync = promisify(exec);
 const GLOB_TIMEOUT_MS = 150000;
 
 let WINDOWS_QBIT_DIR: string;
-// const WINDOWS_QBIT_DIR =
-//     '/media/farhan/SSD-OS-10/Users/metal/AppData/Local/qBittorrent/BT_backup';
-// 🔧 Hardcoded base path where Linux files should be copied to
-
-const QBIT_FLATPAK_DIR = path.join(
-    os.homedir(),
-    '.var/app/org.qbittorrent.qBittorrent/data/qBittorrent/BT_backup',
-);
 
 // Prompt user for input with a default value
 const promptUserInput = async (
@@ -32,14 +24,12 @@ const promptUserInput = async (
             output: process.stdout,
         });
 
-        // Add default value in the prompt
         const promptText = defaultValue
             ? `${question} (${defaultValue}): `
             : `${question}: `;
 
         rl.question(promptText, (answer) => {
             rl.close();
-            // Use default if no answer given
             resolve(answer || defaultValue || '');
         });
     });
@@ -114,7 +104,6 @@ const findBTBackup = async (): Promise<string | null> => {
 
 // Function to search for a single path
 const findPaths = async (path: string): Promise<string[]> => {
-    console.log(`Searching for path: ${path}`);
     const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => {
             reject(
@@ -170,7 +159,7 @@ const findPaths = async (path: string): Promise<string[]> => {
 
 while (!WINDOWS_QBIT_DIR) {
     WINDOWS_QBIT_DIR = await promptUserInput(
-        'Enter the path to your qBittorrent Windows directory:',
+        'Enter the path to your qBittorrent Windows directory',
     );
 }
 
@@ -197,6 +186,7 @@ if (!fs.existsSync(WINDOWS_QBIT_DIR)) {
 
 const files = await fs.promises.readdir(WINDOWS_QBIT_DIR);
 const fastResumeFiles = files.filter((f) => f.endsWith('.fastresume'));
+const torrentFiles = files.filter((f) => f.endsWith('.torrent'));
 
 if (files.length < 1) {
     console.log('🤷 No torrents found.');
@@ -241,3 +231,37 @@ await Promise.all(
 console.log(`📂 Save paths extracted`, pathMap);
 
 console.log(`📄 ${fastResumeFiles.length} torrents torrents will be migrated.`);
+
+const confirm = await promptUserInput('Begin migration? (y/n)');
+if (confirm.toLowerCase() !== 'y' || confirm.toLowerCase() !== 'yes') {
+    console.error('❗ Migration cancelled.');
+    process.exit(0);
+}
+
+//copy .torrent files
+await Promise.all(
+    torrentFiles.map(async (file) => {
+        const sourcePath = path.join(WINDOWS_QBIT_DIR, file);
+        const destinationPath = path.join(LINUX_QBIT_DIR, file);
+        try {
+            await fs.promises.copyFile(sourcePath, destinationPath);
+        } catch (error) {
+            console.error('❌ Error copying torrent file:', error);
+        }
+    }),
+);
+
+//modify fastresume file and move
+await Promise.all(
+    fastResumeFiles.map(async (file) => {
+        const filePath = path.join(WINDOWS_QBIT_DIR, file);
+        const fileContent = await fs.promises.readFile(filePath);
+        const decoded = bencode.decode(fileContent, 'utf-8');
+        decoded.save_path = pathMap[decoded.save_path].linuxPath;
+        try {
+            await fs.promises.writeFile(filePath, bencode.encode(decoded));
+        } catch (error) {
+            console.error('❌ Error writing fastresume file:', error);
+        }
+    }),
+);
