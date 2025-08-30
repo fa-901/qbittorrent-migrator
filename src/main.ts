@@ -48,7 +48,7 @@ interface PathMatchResult {
 /**
  * Finds the correct file path for a torrent by validating file structure
  */
-export async function findCorrectTorrentPath(
+function findCorrectTorrentPath(
     torrentData: TorrentData,
     filePaths: string[],
 ): Promise<PathMatchResult | null> {
@@ -189,7 +189,7 @@ export async function findCorrectTorrentPath(
         `\nSelected best match: ${best.basePath} with confidence ${best.confidence}`,
     );
 
-    return best;
+    return Promise.resolve(best);
 }
 
 function getExpectedFiles(
@@ -382,6 +382,10 @@ function validateMultiFileStructure(
     };
 }
 
+const sanitizePath = (str: string): string => {
+    return str.replace(/:/g, '').replace(/\\/g, '-');
+};
+
 // Prompt user for input with a default value
 const promptUserInput = async (
     question: string,
@@ -526,20 +530,6 @@ const findPaths = async (path: string): Promise<string[]> => {
     }
 };
 
-// const findExactPath = async (
-//     torrentData: any,
-//     linuxPaths: string[],
-// ): Promise<string | null> => {
-//     const path = linuxPaths.find(async (path) => {
-//         const isRightPath = await quickCheck(torrentData, path);
-//         return isRightPath;
-//         // const fileContent = await fs.promises.readFile(path);
-//         // const decoded = bencode.decode(fileContent, 'utf-8');
-//         // return decoded.name === torrent.name;
-//     });
-//     return path;
-// };
-
 while (!WINDOWS_QBIT_DIR) {
     WINDOWS_QBIT_DIR = await promptUserInput(
         'Enter the path to your qBittorrent Windows directory',
@@ -580,6 +570,7 @@ type Path = {
     normalizedPath: string;
     linuxPath?: string;
     torrent?: any;
+    windowsPath?: string;
 };
 const pathMap: { [key: string]: Path } = {};
 
@@ -599,9 +590,11 @@ await Promise.all(
                 .replace(/^[A-Z]:\\/i, '')
                 .replace(/\\+$/, '')
                 .replace(/\\/g, '/');
-            pathMap[decodedFastResume.save_path] = {
+            const key = sanitizePath(decodedFastResume.save_path);
+            pathMap[key] = {
                 normalizedPath: savePath,
                 torrent: decodedTorrent,
+                windowsPath: decodedFastResume.save_path,
             };
         } catch (error) {
             console.error('❌ Error decoding fastresume file:', error);
@@ -631,18 +624,22 @@ console.log(`📂 Save paths extracted`, pathMap);
 console.log(`📄 ${fastResumeFiles.length} torrents torrents will be migrated.`);
 
 const confirm = await promptUserInput('Begin migration? (y/n)');
-if (confirm.toLowerCase() !== 'y' || confirm.toLowerCase() !== 'yes') {
+if (!['y', 'yes'].includes(confirm.trim().toLowerCase())) {
     console.error('❗ Migration cancelled.');
     process.exit(0);
 }
 
-//copy .torrent files
+//copy .torrent and .fastresume files
 await Promise.all(
     torrentFiles.map(async (file) => {
         const sourcePath = path.join(WINDOWS_QBIT_DIR, file);
         const destinationPath = path.join(LINUX_QBIT_DIR, file);
+        const fastResumeFile = file.replace(/\.torrent$/, '.fastresume');
+        const fastResumeSource = path.join(WINDOWS_QBIT_DIR, fastResumeFile);
+        const fastResumeDestination = path.join(LINUX_QBIT_DIR, fastResumeFile);
         try {
             await fs.promises.copyFile(sourcePath, destinationPath);
+            await fs.promises.copyFile(fastResumeSource, fastResumeDestination);
         } catch (error) {
             console.error('❌ Error copying torrent file:', error);
         }
@@ -650,16 +647,29 @@ await Promise.all(
 );
 
 //modify fastresume file and move
-await Promise.all(
-    fastResumeFiles.map(async (file) => {
-        const filePath = path.join(WINDOWS_QBIT_DIR, file);
-        const fileContent = await fs.promises.readFile(filePath);
-        const decoded = bencode.decode(fileContent, 'utf-8');
-        decoded.save_path = pathMap[decoded.save_path].linuxPath;
-        try {
-            await fs.promises.writeFile(filePath, bencode.encode(decoded));
-        } catch (error) {
-            console.error('❌ Error writing fastresume file:', error);
-        }
-    }),
-);
+// await Promise.all(
+//     fastResumeFiles.map(async (file) => {
+//         const filePath = path.join(WINDOWS_QBIT_DIR, file);
+//         const fileContent = await fs.promises.readFile(filePath);
+//         const decoded = bencode.decode(fileContent, 'utf-8');
+//         const key = sanitizePath(decoded.save_path);
+//         // delete decoded.path; // remove old path info
+//         // decoded.save_path = pathMap[key].linuxPath;
+//         const content = await fs.promises.readFile(filePath, 'utf-8');
+//         const updatedContent = content.replace(
+//             pathMap[key].windowsPath,
+//             pathMap[key].linuxPath,
+//         );
+//         try {
+//             const destinationPath = path.join(LINUX_QBIT_DIR, file);
+//             console.log(`📄 Writing fastresume file to: ${destinationPath}`);
+//             await fs.promises.writeFile(
+//                 destinationPath,
+//                 updatedContent,
+//                 'utf-8',
+//             );
+//         } catch (error) {
+//             console.error('❌ Error writing fastresume file:', error);
+//         }
+//     }),
+// );
