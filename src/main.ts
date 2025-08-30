@@ -181,13 +181,6 @@ export async function findCorrectTorrentPath(
         );
     });
 
-    // Return the candidate with the highest confidence
-    if (candidates.length === 0) {
-        console.log('DEBUG INFO:');
-        debug.forEach((line) => console.log(line));
-        return null;
-    }
-
     const best = candidates.reduce((best, current) =>
         current.confidence > best.confidence ? current : best,
     );
@@ -195,10 +188,6 @@ export async function findCorrectTorrentPath(
     debug.push(
         `\nSelected best match: ${best.basePath} with confidence ${best.confidence}`,
     );
-
-    // Always log debug info for now
-    console.log('DEBUG INFO:');
-    debug.forEach((line) => console.log(line));
 
     return best;
 }
