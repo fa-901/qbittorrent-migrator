@@ -4,7 +4,7 @@ A script that migrates your complete qBittorrent setup from Windows to Linux in 
 
 ### What does it do?
 
-- **Migrates everything**: Torrents, resume data, settings, RSS feeds, categories, and watched folders
+- **Migrates everything**: Torrents, resume data, etc.
 - **Converts paths automatically**: Maps Windows paths (`C:\Users\...`) to Linux equivalents (`/mnt/...`)
 - **Preserves seeding**: Maintains ratios and progress for private trackers
 - **Safe migration**: Shows a dry-run preview and creates backups before making changes

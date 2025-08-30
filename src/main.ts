@@ -6,12 +6,392 @@ import { promisify } from 'util';
 import readline from 'readline';
 import bencode from 'bencode';
 import { glob } from 'glob';
-
 const execAsync = promisify(exec);
 
 const GLOB_TIMEOUT_MS = 150000;
 
 let WINDOWS_QBIT_DIR: string;
+
+interface TorrentFile {
+    length: number;
+    path: string[];
+}
+
+interface TorrentData {
+    info: {
+        name: string;
+        files?: TorrentFile[];
+        length?: number;
+        'piece length': number;
+        pieces: Buffer;
+    };
+}
+
+interface FileMatch {
+    expectedPath: string;
+    actualPath: string;
+    exists: boolean;
+    expectedSize: number;
+    actualSize: number;
+    sizeMatch: boolean;
+}
+
+interface PathMatchResult {
+    basePath: string;
+    confidence: number;
+    matches: FileMatch[];
+    totalFiles: number;
+    existingFiles: number;
+    debug: string[];
+}
+
+/**
+ * Finds the correct file path for a torrent by validating file structure
+ */
+export async function findCorrectTorrentPath(
+    torrentData: TorrentData,
+    filePaths: string[],
+): Promise<PathMatchResult | null> {
+    const debug: string[] = [];
+    debug.push(`Starting analysis with ${filePaths.length} possible paths`);
+
+    const torrentName = torrentData.info.name;
+    const isSingleFile = !torrentData.info.files;
+
+    debug.push(`Torrent name: "${torrentName}"`);
+    debug.push(`Is single file: ${isSingleFile}`);
+
+    // Get expected files structure from torrent
+    const expectedFiles = getExpectedFiles(torrentData);
+    debug.push(`Expected files count: ${expectedFiles.length}`);
+    expectedFiles.slice(0, 3).forEach((file, i) => {
+        debug.push(`Expected file ${i}: ${file.path} (${file.size} bytes)`);
+    });
+
+    const candidates: PathMatchResult[] = [];
+
+    // Test each possible base path
+    for (let i = 0; i < filePaths.length; i++) {
+        const basePath = filePaths[i];
+        debug.push(`\n--- Testing path ${i + 1}: "${basePath}" ---`);
+
+        if (!fs.existsSync(basePath)) {
+            debug.push(`Path does not exist, skipping`);
+            continue;
+        }
+
+        const stat = fs.statSync(basePath);
+        debug.push(
+            `Path exists, is directory: ${stat.isDirectory()}, is file: ${stat.isFile()}`,
+        );
+
+        // For single-file torrents
+        if (isSingleFile) {
+            debug.push(`Checking as single-file torrent`);
+
+            // Check if basePath is the file directly
+            if (stat.isFile()) {
+                const result = validateSingleFile(
+                    basePath,
+                    expectedFiles[0],
+                    debug,
+                );
+                if (result) {
+                    candidates.push({
+                        basePath: basePath,
+                        confidence: result.confidence,
+                        matches: [result.match],
+                        totalFiles: 1,
+                        existingFiles: result.match.exists ? 1 : 0,
+                        debug: [...debug],
+                    });
+                }
+            }
+
+            // Check if basePath contains the file
+            if (stat.isDirectory()) {
+                const filePath = path.join(basePath, torrentName);
+                debug.push(`Checking for file at: "${filePath}"`);
+                if (fs.existsSync(filePath)) {
+                    const result = validateSingleFile(
+                        filePath,
+                        expectedFiles[0],
+                        debug,
+                    );
+                    if (result) {
+                        candidates.push({
+                            basePath: basePath,
+                            confidence: result.confidence,
+                            matches: [result.match],
+                            totalFiles: 1,
+                            existingFiles: result.match.exists ? 1 : 0,
+                            debug: [...debug],
+                        });
+                    }
+                } else {
+                    debug.push(`File not found at expected location`);
+                }
+            }
+            continue;
+        }
+
+        // For multi-file torrents, basePath should be a directory
+        if (!stat.isDirectory()) {
+            debug.push(`Not a directory, skipping for multi-file torrent`);
+            continue;
+        }
+
+        // Test different possible structures:
+        // 1. basePath/torrentName/ (torrent name as root folder)
+        // 2. basePath/ (files directly in basePath)
+        const pathsToTest = [
+            {
+                testPath: path.join(basePath, torrentName),
+                description: 'with torrent name folder',
+            },
+            { testPath: basePath, description: 'direct in base path' },
+        ];
+
+        for (const { testPath, description } of pathsToTest) {
+            debug.push(
+                `Testing multi-file structure: ${description} at "${testPath}"`,
+            );
+            const result = validateMultiFileStructure(
+                testPath,
+                expectedFiles,
+                debug,
+            );
+            if (result && result.confidence > 0) {
+                debug.push(
+                    `Found candidate with confidence: ${result.confidence}`,
+                );
+                candidates.push({
+                    ...result,
+                    basePath: basePath,
+                    debug: [...debug],
+                });
+            }
+        }
+    }
+
+    debug.push(`\nFound ${candidates.length} candidates`);
+    candidates.forEach((candidate, i) => {
+        debug.push(
+            `Candidate ${i + 1}: ${candidate.basePath} (confidence: ${candidate.confidence})`,
+        );
+    });
+
+    // Return the candidate with the highest confidence
+    if (candidates.length === 0) {
+        console.log('DEBUG INFO:');
+        debug.forEach((line) => console.log(line));
+        return null;
+    }
+
+    const best = candidates.reduce((best, current) =>
+        current.confidence > best.confidence ? current : best,
+    );
+
+    debug.push(
+        `\nSelected best match: ${best.basePath} with confidence ${best.confidence}`,
+    );
+
+    // Always log debug info for now
+    console.log('DEBUG INFO:');
+    debug.forEach((line) => console.log(line));
+
+    return best;
+}
+
+function getExpectedFiles(
+    torrentData: TorrentData,
+): Array<{ path: string; size: number }> {
+    const files: Array<{ path: string; size: number }> = [];
+
+    if (torrentData.info.files) {
+        // Multi-file torrent
+        for (const file of torrentData.info.files) {
+            files.push({
+                path: file.path.join('/'),
+                size: file.length,
+            });
+        }
+    } else {
+        // Single-file torrent
+        files.push({
+            path: torrentData.info.name,
+            size: torrentData.info.length || 0,
+        });
+    }
+
+    return files;
+}
+
+function validateSingleFile(
+    filePath: string,
+    expectedFile: { path: string; size: number },
+    debug: string[],
+): { confidence: number; match: FileMatch } | null {
+    try {
+        debug.push(`Validating single file: "${filePath}"`);
+        const stat = fs.statSync(filePath);
+        const actualSize = stat.size;
+        const expectedSize = expectedFile.size;
+
+        debug.push(
+            `File exists - Expected size: ${expectedSize}, Actual size: ${actualSize}`,
+        );
+
+        const match: FileMatch = {
+            expectedPath: expectedFile.path,
+            actualPath: filePath,
+            exists: true,
+            expectedSize,
+            actualSize,
+            sizeMatch: actualSize === expectedSize,
+        };
+
+        // Calculate confidence
+        let confidence = 0.7; // Base confidence for existing file
+
+        if (match.sizeMatch) {
+            confidence = 1.0; // Perfect match
+            debug.push(`Perfect size match - confidence: ${confidence}`);
+        } else if (actualSize < expectedSize && actualSize > 0) {
+            // Incomplete file - still likely correct
+            const completionRatio = actualSize / expectedSize;
+            confidence = 0.5 + completionRatio * 0.3; // 0.5-0.8 range
+            debug.push(
+                `Incomplete file (${(completionRatio * 100).toFixed(1)}% complete) - confidence: ${confidence}`,
+            );
+        } else {
+            confidence = 0.2; // File exists but size is wrong
+            debug.push(`Size mismatch - confidence: ${confidence}`);
+        }
+
+        return { confidence, match };
+    } catch (error) {
+        debug.push(`Error validating single file: ${error}`);
+        return null;
+    }
+}
+
+function validateMultiFileStructure(
+    basePath: string,
+    expectedFiles: Array<{ path: string; size: number }>,
+    debug: string[],
+): PathMatchResult | null {
+    debug.push(`Validating multi-file structure at: "${basePath}"`);
+
+    if (!fs.existsSync(basePath)) {
+        debug.push(`Base path does not exist`);
+        return null;
+    }
+
+    if (!fs.statSync(basePath).isDirectory()) {
+        debug.push(`Base path is not a directory`);
+        return null;
+    }
+
+    const matches: FileMatch[] = [];
+    let existingFiles = 0;
+    let perfectMatches = 0;
+
+    // Check first few files to avoid too much logging
+    const filesToCheck = Math.min(expectedFiles.length, 10);
+    debug.push(
+        `Checking first ${filesToCheck} files out of ${expectedFiles.length} total`,
+    );
+
+    for (let i = 0; i < expectedFiles.length; i++) {
+        const expectedFile = expectedFiles[i];
+        const fullPath = path.join(basePath, expectedFile.path);
+
+        if (i < 5) {
+            // Only log first 5 files to avoid spam
+            debug.push(
+                `Checking file: "${expectedFile.path}" at "${fullPath}"`,
+            );
+        }
+
+        try {
+            const stat = fs.statSync(fullPath);
+            const actualSize = stat.size;
+            const sizeMatch = actualSize === expectedFile.size;
+
+            matches.push({
+                expectedPath: expectedFile.path,
+                actualPath: fullPath,
+                exists: true,
+                expectedSize: expectedFile.size,
+                actualSize,
+                sizeMatch,
+            });
+
+            existingFiles++;
+            if (sizeMatch) perfectMatches++;
+
+            if (i < 5) {
+                debug.push(
+                    `File exists - Expected: ${expectedFile.size}, Actual: ${actualSize}, Match: ${sizeMatch}`,
+                );
+            }
+        } catch {
+            matches.push({
+                expectedPath: expectedFile.path,
+                actualPath: fullPath,
+                exists: false,
+                expectedSize: expectedFile.size,
+                actualSize: 0,
+                sizeMatch: false,
+            });
+
+            if (i < 5) {
+                debug.push(`File does not exist`);
+            }
+        }
+    }
+
+    debug.push(
+        `Results: ${existingFiles}/${expectedFiles.length} files exist, ${perfectMatches} perfect matches`,
+    );
+
+    // Calculate confidence score
+    const totalFiles = expectedFiles.length;
+    const existenceRatio = existingFiles / totalFiles;
+    const perfectMatchRatio =
+        existingFiles > 0 ? perfectMatches / existingFiles : 0;
+
+    // More lenient confidence calculation
+    let confidence = 0;
+
+    if (existingFiles > 0) {
+        confidence = existenceRatio * 0.7 + perfectMatchRatio * 0.3;
+
+        // Bonus for having most files
+        if (existenceRatio > 0.8) {
+            confidence += 0.1;
+        }
+
+        // Even if files don't match perfectly, if most exist, give reasonable confidence
+        if (existenceRatio > 0.5) {
+            confidence = Math.max(confidence, 0.6);
+        }
+    }
+
+    debug.push(
+        `Calculated confidence: ${confidence} (existence: ${existenceRatio}, perfect: ${perfectMatchRatio})`,
+    );
+
+    return {
+        basePath,
+        confidence,
+        matches,
+        totalFiles,
+        existingFiles,
+        debug: [],
+    };
+}
 
 // Prompt user for input with a default value
 const promptUserInput = async (
@@ -157,6 +537,20 @@ const findPaths = async (path: string): Promise<string[]> => {
     }
 };
 
+// const findExactPath = async (
+//     torrentData: any,
+//     linuxPaths: string[],
+// ): Promise<string | null> => {
+//     const path = linuxPaths.find(async (path) => {
+//         const isRightPath = await quickCheck(torrentData, path);
+//         return isRightPath;
+//         // const fileContent = await fs.promises.readFile(path);
+//         // const decoded = bencode.decode(fileContent, 'utf-8');
+//         // return decoded.name === torrent.name;
+//     });
+//     return path;
+// };
+
 while (!WINDOWS_QBIT_DIR) {
     WINDOWS_QBIT_DIR = await promptUserInput(
         'Enter the path to your qBittorrent Windows directory',
@@ -196,6 +590,7 @@ if (files.length < 1) {
 type Path = {
     normalizedPath: string;
     linuxPath?: string;
+    torrent?: any;
 };
 const pathMap: { [key: string]: Path } = {};
 
@@ -204,14 +599,21 @@ await Promise.all(
     fastResumeFiles.map(async (file) => {
         const filePath = path.join(WINDOWS_QBIT_DIR, file);
         const fileContent = await fs.promises.readFile(filePath);
+        const torrentContent = await fs.promises.readFile(
+            filePath.replace(/\.fastresume$/, '.torrent'),
+        );
         try {
-            const decoded = bencode.decode(fileContent, 'utf-8');
+            const decodedFastResume = bencode.decode(fileContent, 'utf-8');
+            const decodedTorrent = bencode.decode(torrentContent, 'utf-8');
             // normalize Windows path
-            const savePath = decoded.save_path
+            const savePath = decodedFastResume.save_path
                 .replace(/^[A-Z]:\\/i, '')
                 .replace(/\\+$/, '')
                 .replace(/\\/g, '/');
-            pathMap[decoded.save_path] = { normalizedPath: savePath };
+            pathMap[decodedFastResume.save_path] = {
+                normalizedPath: savePath,
+                torrent: decodedTorrent,
+            };
         } catch (error) {
             console.error('❌ Error decoding fastresume file:', error);
         }
@@ -224,8 +626,15 @@ await Promise.all(
         const linuxPaths = await findPaths(pathMap[savePath].normalizedPath);
         if (!linuxPaths.length) {
             process.exit(1);
+        } else if (linuxPaths.length > 1) {
+            const exactPath = await findCorrectTorrentPath(
+                pathMap[savePath].torrent,
+                linuxPaths,
+            );
+            pathMap[savePath].linuxPath = exactPath.basePath;
+        } else {
+            pathMap[savePath].linuxPath = linuxPaths[0];
         }
-        pathMap[savePath].linuxPath = linuxPaths[0];
     }),
 );
 console.log(`📂 Save paths extracted`, pathMap);
