@@ -647,29 +647,29 @@ await Promise.all(
 );
 
 //modify fastresume file and move
-// await Promise.all(
-//     fastResumeFiles.map(async (file) => {
-//         const filePath = path.join(WINDOWS_QBIT_DIR, file);
-//         const fileContent = await fs.promises.readFile(filePath);
-//         const decoded = bencode.decode(fileContent, 'utf-8');
-//         const key = sanitizePath(decoded.save_path);
-//         // delete decoded.path; // remove old path info
-//         // decoded.save_path = pathMap[key].linuxPath;
-//         const content = await fs.promises.readFile(filePath, 'utf-8');
-//         const updatedContent = content.replace(
-//             pathMap[key].windowsPath,
-//             pathMap[key].linuxPath,
-//         );
-//         try {
-//             const destinationPath = path.join(LINUX_QBIT_DIR, file);
-//             console.log(`📄 Writing fastresume file to: ${destinationPath}`);
-//             await fs.promises.writeFile(
-//                 destinationPath,
-//                 updatedContent,
-//                 'utf-8',
-//             );
-//         } catch (error) {
-//             console.error('❌ Error writing fastresume file:', error);
-//         }
-//     }),
-// );
+await Promise.all(
+    fastResumeFiles.map(async (file) => {
+        const filePath = path.join(WINDOWS_QBIT_DIR, file);
+        const fileContent = await fs.promises.readFile(filePath);
+
+        const decoded = bencode.decode(fileContent, 'utf-8');
+        const key = sanitizePath(decoded.save_path);
+
+        const content = await fs.promises.readFile(filePath, 'binary');
+        const updatedContent = content.replaceAll(
+            `${pathMap[key].windowsPath.length}:${pathMap[key].windowsPath}`,
+            `${pathMap[key].linuxPath.length}:${pathMap[key].linuxPath}`,
+        );
+        try {
+            const destinationPath = path.join(LINUX_QBIT_DIR, file);
+            console.log(`📄 Writing fastresume file to: ${destinationPath}`);
+            await fs.promises.writeFile(
+                destinationPath,
+                updatedContent,
+                'binary',
+            );
+        } catch (error) {
+            console.error('❌ Error writing fastresume file:', error);
+        }
+    }),
+);
