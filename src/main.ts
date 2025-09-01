@@ -543,7 +543,7 @@ if (!LINUX_QBIT_DIR) {
     );
     process.exit(1);
 }
-console.log('Found Linux BT_backup:', LINUX_QBIT_DIR);
+console.log(`\nFound Linux BT_backup: ${LINUX_QBIT_DIR}\n\n`);
 
 if (await isQBitRunning()) {
     console.error(
@@ -619,7 +619,10 @@ await Promise.all(
         }
     }),
 );
-console.log(`📂 Save paths extracted`, pathMap);
+for(const key in pathMap) {
+    console.log(`Windows path: ${pathMap[key].windowsPath}`);
+    console.log(`Updated Linux path: ${pathMap[key].linuxPath}\n--------------\n`);
+}
 
 console.log(`📄 ${fastResumeFiles.length} torrents torrents will be migrated.`);
 
@@ -663,6 +666,7 @@ await Promise.all(
         try {
             const destinationPath = path.join(LINUX_QBIT_DIR, file);
             console.log(`📄 Writing fastresume file to: ${destinationPath}`);
+            // Due to issues encountered with bencode encoding, the fastresume file is modified directly
             await fs.promises.writeFile(
                 destinationPath,
                 updatedContent,
